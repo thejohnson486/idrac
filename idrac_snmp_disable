@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""
+Script to disable SNMP on multiple Dell iDRAC systems via Redfish API
+"""
+
+import requests
+import json
+import sys
+import getpass
+from urllib3.exceptions import InsecureRequestWarning
+
+# Suppress SSL warnings (iDRACs often use self-signed certificates)
+requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+
+def read_hosts_from_file(filename):
+    """
+    Read iDRAC hosts from a text file
+    
+    Args:
+        filename: Path to the text file
+    
+    Returns:
+        list: List of host addresses
+    """
+    try:
+        with open(filename, 'r') as f:
+            hosts = []
+            for line in f:
+                line = line.strip()
+                # Skip empty lines and comments
+                if line and not line.startswith('#'):
+                    hosts.append(line)
+            return hosts
+    except FileNotFoundError:
+        print(f"ERROR: File '{filename}' not found")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: Failed to read file '{filename}': {str(e)}")
+        sys.exit(1)
+
+def get_idrac_hosts():
+    """
+    Get iDRAC hosts from user input or file
+    
+    Returns:
+        list: List of iDRAC host dictionaries
+    """
+    print("Choose input method:")
+    print("1. Enter IP addresses/DNS names manually")
+    print("2. Load from a text file")
+    choice = input("Enter choice (1 or 2) [1]: ").strip() or "1"
+    
+    host_list = []
+    
+    if choice == "2":
+        filename = input("Enter the path to the text file: ").strip()
+        if not filename:
+            print("ERROR: No filename provided")
+            sys.exit(1)
+        host_list = read_hosts_from_file(filename)
+    else:
+        print("\nEnter iDRAC IP addresses or DNS names (comma-separated):")
+        print("Example: 192.168.1.100, idrac1.example.com, 10.0.0.50")
+        hosts_input = input("> ").strip()
+        
+        if not hosts_input:
+            print("ERROR: No hosts provided")
+            sys.exit(1)
+        
+        # Parse the input
+        host_list = [h.strip() for h in hosts_input.split(",") if h.strip()]
+    
+    if not host_list:
+        print("ERROR: No valid hosts provided")
+        sys.exit(1)
+    
+    # Get credentials
+    print(f"\nFound {len(host_list)} iDRAC(s)")
+    print("\nEnter credentials (same for all iDRACs):")
+    username = input("Username [root]: ").strip() or "root"
+    password = getpass.getpass("Password: ")
+    
+    if not password:
+        print("ERROR: Password cannot be empty")
+        sys.exit(1)
+    
+    # Build the hosts list
+    idrac_hosts = []
+    for host in host_list:
+        idrac_hosts.append({
+            "ip": host,
+            "username": username,
+            "password": password
+        })
+    
+    return idrac_hosts
+
+def disable_snmp(host, username, password):
+    """
+    Disable SNMP on a Dell iDRAC using Redfish API
+    
+    Args:
+        host: iDRAC IP address or hostname
+        username: iDRAC username
+        password: iDRAC password
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    base_url = f"https://{host}"
+    session = requests.Session()
+    session.auth = (username, password)
+    session.verify = False
+    
+    try:
+        print(f"\n[{host}] Connecting to iDRAC...")
+        
+        # Get current SNMP settings
+        snmp_url = f"{base_url}/redfish/v1/Managers/iDRAC.Embedded.1/NetworkProtocol"
+        response = session.get(snmp_url, timeout=30)
+        
+        if response.status_code != 200:
+            print(f"[{host}] ERROR: Failed to get SNMP settings (Status: {response.status_code})")
+            return False
+        
+        current_config = response.json()
+        current_snmp_enabled = current_config.get("SNMP", {}).get("ProtocolEnabled", False)
+        
+        print(f"[{host}] Current SNMP status: {'Enabled' if current_snmp_enabled else 'Disabled'}")
+        
+        if not current_snmp_enabled:
+            print(f"[{host}] SNMP is already disabled")
+            return True
+        
+        # Disable SNMP
+        print(f"[{host}] Disabling SNMP...")
+        payload = {
+            "SNMP": {
+                "ProtocolEnabled": False
+            }
+        }
+        
+        response = session.patch(snmp_url, json=payload, timeout=30)
+        
+        if response.status_code in [200, 204]:
+            print(f"[{host}] SUCCESS: SNMP disabled successfully")
+            return True
+        else:
+            print(f"[{host}] ERROR: Failed to disable SNMP (Status: {response.status_code})")
+            print(f"[{host}] Response: {response.text}")
+            return False
+            
+    except requests.exceptions.Timeout:
+        print(f"[{host}] ERROR: Connection timeout")
+        return False
+    except requests.exceptions.ConnectionError:
+        print(f"[{host}] ERROR: Unable to connect to iDRAC")
+        return False
+    except Exception as e:
+        print(f"[{host}] ERROR: {str(e)}")
+        return False
+
+def main():
+    """Main function to process all iDRAC hosts"""
+    print("=" * 70)
+    print("Dell iDRAC SNMP Disable Script")
+    print("=" * 70)
+    print()
+    
+    # Get iDRAC hosts from user input
+    idrac_hosts = get_idrac_hosts()
+    
+    print("\n" + "=" * 70)
+    print("Starting SNMP disable process...")
+    print("=" * 70)
+    
+    results = []
+    
+    for idrac in idrac_hosts:
+        success = disable_snmp(
+            idrac["ip"],
+            idrac["username"],
+            idrac["password"]
+        )
+        results.append({
+            "host": idrac["ip"],
+            "success": success
+        })
+    
+    # Summary
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    
+    successful = sum(1 for r in results if r["success"])
+    failed = len(results) - successful
+    
+    print(f"Total iDRACs: {len(results)}")
+    print(f"Successful: {successful}")
+    print(f"Failed: {failed}")
+    
+    if failed > 0:
+        print("\nFailed hosts:")
+        for r in results:
+            if not r["success"]:
+                print(f"  - {r['host']}")
+    
+    print("=" * 70)
+
+if __name__ == "__main__":
+    main()
