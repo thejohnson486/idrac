@@ -1,0 +1,10 @@
+# iDRAC Hosts List
+# One IP address or hostname per line
+# Lines starting with # are ignored
+
+# Example entries:
+# 192.168.1.100
+# 192.168.1.101
+# idrac-server1.example.com
+# idrac-server2.example.com
+
