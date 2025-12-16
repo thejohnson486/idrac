@@ -411,6 +411,83 @@ Timestamped log files are created in the current directory:
 - **Contents**: All operations with timestamps
 - **Use**: Audit trail, troubleshooting, compliance
 
+### Enhanced API Logging 🆕
+
+The script now captures **detailed API responses** from the iDRAC including:
+- ✅ Full request details (method, endpoint, payload)
+- ✅ Complete API responses (JSON formatted)
+- ✅ HTTP status codes
+- ✅ Error messages and details from iDRAC
+- ✅ All API calls (GET, PATCH, POST)
+
+This is extremely useful for:
+- **Troubleshooting**: See exactly what the iDRAC returned
+- **Auditing**: Complete record of all API interactions
+- **Debugging**: Understand why operations failed
+- **Compliance**: Full audit trail of configuration changes
+
+### Example Log Output:
+```
+[2025-12-16 10:30:15] [192.168.1.100] Connecting to iDRAC via Redfish API...
+[2025-12-16 10:30:16] [192.168.1.100] Checking IPMI status at endpoint: /redfish/v1/Managers/iDRAC.Embedded.1/NetworkProtocol
+[2025-12-16 10:30:16] [192.168.1.100] API Call Details:
+[2025-12-16 10:30:16]   Method: GET
+[2025-12-16 10:30:16]   Endpoint: /redfish/v1/Managers/iDRAC.Embedded.1/NetworkProtocol
+[2025-12-16 10:30:16]   Status Code: 200
+[2025-12-16 10:30:16]   Response JSON:
+[2025-12-16 10:30:16]     {
+[2025-12-16 10:30:16]       "IPMI": {
+[2025-12-16 10:30:16]         "ProtocolEnabled": true,
+[2025-12-16 10:30:16]         "Port": 623
+[2025-12-16 10:30:16]       }
+[2025-12-16 10:30:16]     }
+[2025-12-16 10:30:17] [192.168.1.100] Current IPMI status: Enabled
+[2025-12-16 10:30:17] [192.168.1.100] Attempting to disable IPMI via NetworkProtocol endpoint
+[2025-12-16 10:30:17] [192.168.1.100] Request payload: {
+[2025-12-16 10:30:17]   "IPMI": {
+[2025-12-16 10:30:17]     "ProtocolEnabled": false
+[2025-12-16 10:30:17]   }
+[2025-12-16 10:30:17] }
+[2025-12-16 10:30:18] [192.168.1.100] API Call Details:
+[2025-12-16 10:30:18]   Method: PATCH
+[2025-12-16 10:30:18]   Endpoint: /redfish/v1/Managers/iDRAC.Embedded.1/NetworkProtocol
+[2025-12-16 10:30:18]   Status Code: 200
+[2025-12-16 10:30:18]   Response JSON:
+[2025-12-16 10:30:18]     {
+[2025-12-16 10:30:18]       "@Message.ExtendedInfo": [
+[2025-12-16 10:30:18]         {
+[2025-12-16 10:30:18]           "Message": "Successfully Completed Request",
+[2025-12-16 10:30:18]           "MessageId": "Base.1.0.Success"
+[2025-12-16 10:30:18]         }
+[2025-12-16 10:30:18]       ]
+[2025-12-16 10:30:18]     }
+[2025-12-16 10:30:18] [192.168.1.100] SUCCESS: IPMI disabled via NetworkProtocol endpoint
+```
+
+### What Gets Logged:
+
+1. **Every API Request**:
+   - HTTP method (GET, PATCH, POST)
+   - Full endpoint URL
+   - Request payload (for PATCH/POST)
+
+2. **Every API Response**:
+   - HTTP status code
+   - Full JSON response (pretty-printed)
+   - Error messages from iDRAC
+   - Extended info messages
+
+3. **Connection Attempts**:
+   - Which endpoints were tried
+   - Success/failure of each attempt
+   - Exception details if connection fails
+
+4. **iDRAC Operations**:
+   - IPMI status checks
+   - Configuration changes
+   - Reboot commands
+   - Verification results
+
 Example log:
 ```
 [2025-12-15 10:30:15] ==========================================

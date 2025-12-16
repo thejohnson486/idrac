@@ -34,7 +34,7 @@ class IDracIPMIDisabler:
         self.log_file = log_file
         self.timeout = 30
         
-    def log_message(self, message: str, color: str = ''):
+    def log_message(self, message: str, color: str = '', include_api_response: bool = False):
         """Log message to console and file"""
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_entry = f"[{timestamp}] {message}"
@@ -52,6 +52,27 @@ class IDracIPMIDisabler:
             for color_code in [Colors.RED, Colors.GREEN, Colors.YELLOW, Colors.BLUE, Colors.NC]:
                 clean_message = clean_message.replace(color_code, '')
             f.write(log_entry + '\n')
+    
+    def log_api_response(self, host: str, endpoint: str, method: str, status_code: int, 
+                         response_text: str = None, response_json: dict = None):
+        """Log detailed API response information"""
+        self.log_message(f"[{host}] API Call Details:")
+        self.log_message(f"  Method: {method}")
+        self.log_message(f"  Endpoint: {endpoint}")
+        self.log_message(f"  Status Code: {status_code}")
+        
+        if response_json:
+            self.log_message(f"  Response JSON:")
+            # Pretty print JSON response
+            json_str = json.dumps(response_json, indent=2)
+            for line in json_str.split('\n'):
+                self.log_message(f"    {line}")
+        elif response_text:
+            self.log_message(f"  Response Text:")
+            for line in response_text.split('\n')[:20]:  # Limit to first 20 lines
+                self.log_message(f"    {line}")
+        
+        self.log_message("")  # Blank line for readability
     
     def get_ipmi_status(self, host: str) -> Tuple[bool, Optional[bool], str]:
         """
@@ -79,8 +100,12 @@ class IDracIPMIDisabler:
                 url = f"{base_url}{endpoint}"
                 response = session.get(url, timeout=self.timeout)
                 
+                # Log API response
+                self.log_message(f"[{host}] Checking IPMI status at endpoint: {endpoint}")
+                
                 if response.status_code == 200:
                     data = response.json()
+                    self.log_api_response(host, endpoint, "GET", response.status_code, response_json=data)
                     
                     # Check NetworkProtocol endpoint
                     if "NetworkProtocol" in endpoint:
@@ -97,9 +122,13 @@ class IDracIPMIDisabler:
                         for key, value in attributes.items():
                             if "IPMI" in key and "Enable" in key:
                                 enabled = value in ["Enabled", "1", 1, True]
+                                self.log_message(f"[{host}] Found IPMI attribute: {key} = {value}")
                                 return True, enabled, f"{key}: {value}"
+                else:
+                    self.log_api_response(host, endpoint, "GET", response.status_code, response_text=response.text)
                 
-            except requests.exceptions.RequestException:
+            except requests.exceptions.RequestException as e:
+                self.log_message(f"[{host}] Request failed for {endpoint}: {str(e)}")
                 continue
         
         return False, None, "Could not find IPMI settings endpoint"
@@ -128,16 +157,34 @@ class IDracIPMIDisabler:
                     }
                 }
                 
+                self.log_message(f"[{host}] Attempting to disable IPMI via NetworkProtocol endpoint")
+                self.log_message(f"[{host}] Request payload: {json.dumps(payload, indent=2)}")
+                
                 response = session.patch(url, json=payload, timeout=self.timeout)
+                
+                # Log full API response
+                try:
+                    response_json = response.json()
+                    self.log_api_response(host, endpoint, "PATCH", response.status_code, response_json=response_json)
+                except:
+                    self.log_api_response(host, endpoint, "PATCH", response.status_code, response_text=response.text)
                 
                 if response.status_code in [200, 204]:
                     return True, "IPMI disabled via NetworkProtocol endpoint"
                 elif response.status_code == 404:
                     continue
                 else:
-                    return False, f"HTTP {response.status_code}: {response.text[:200]}"
+                    error_msg = f"HTTP {response.status_code}"
+                    try:
+                        error_data = response.json()
+                        if "error" in error_data:
+                            error_msg += f": {error_data['error'].get('message', response.text[:200])}"
+                    except:
+                        error_msg += f": {response.text[:200]}"
+                    return False, error_msg
                     
             except requests.exceptions.RequestException as e:
+                self.log_message(f"[{host}] Request exception for {endpoint}: {str(e)}")
                 continue
         
         return False, "NetworkProtocol endpoint not available"
@@ -160,10 +207,13 @@ class IDracIPMIDisabler:
                 url = f"{base_url}{endpoint}"
                 
                 # Get current attributes to find the correct key
+                self.log_message(f"[{host}] Fetching current attributes from {endpoint}")
                 response = session.get(url, timeout=self.timeout)
                 
                 if response.status_code == 200:
                     data = response.json()
+                    self.log_api_response(host, endpoint, "GET", response.status_code, response_json=data)
+                    
                     attributes = data.get("Attributes", {})
                     
                     # Find IPMI enable key
@@ -171,6 +221,7 @@ class IDracIPMIDisabler:
                     for key in attributes.keys():
                         if "IPMI" in key and "Enable" in key:
                             ipmi_key = key
+                            self.log_message(f"[{host}] Found IPMI key: {ipmi_key} = {attributes[key]}")
                             break
                     
                     if ipmi_key:
@@ -181,14 +232,34 @@ class IDracIPMIDisabler:
                             }
                         }
                         
+                        self.log_message(f"[{host}] Attempting to disable IPMI via Attributes endpoint")
+                        self.log_message(f"[{host}] Request payload: {json.dumps(payload, indent=2)}")
+                        
                         response = session.patch(url, json=payload, timeout=self.timeout)
+                        
+                        # Log full API response
+                        try:
+                            response_json = response.json()
+                            self.log_api_response(host, endpoint, "PATCH", response.status_code, response_json=response_json)
+                        except:
+                            self.log_api_response(host, endpoint, "PATCH", response.status_code, response_text=response.text)
                         
                         if response.status_code in [200, 204]:
                             return True, f"IPMI disabled via Attributes endpoint ({ipmi_key})"
                         else:
-                            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+                            error_msg = f"HTTP {response.status_code}"
+                            try:
+                                error_data = response.json()
+                                if "error" in error_data:
+                                    error_msg += f": {error_data['error'].get('message', response.text[:200])}"
+                            except:
+                                error_msg += f": {response.text[:200]}"
+                            return False, error_msg
+                else:
+                    self.log_api_response(host, endpoint, "GET", response.status_code, response_text=response.text)
                 
-            except requests.exceptions.RequestException:
+            except requests.exceptions.RequestException as e:
+                self.log_message(f"[{host}] Request exception for {endpoint}: {str(e)}")
                 continue
         
         return False, "Attributes endpoint not available"
@@ -222,18 +293,31 @@ class IDracIPMIDisabler:
                     "ResetType": "GracefulRestart"
                 }
                 
+                self.log_message(f"[{host}] Sending reboot request to {endpoint}")
+                self.log_message(f"[{host}] Request payload: {json.dumps(payload, indent=2)}")
+                
                 response = session.post(url, json=payload, timeout=self.timeout)
+                
+                # Log full API response
+                try:
+                    response_json = response.json()
+                    self.log_api_response(host, endpoint, "POST", response.status_code, response_json=response_json)
+                except:
+                    self.log_api_response(host, endpoint, "POST", response.status_code, response_text=response.text)
                 
                 if response.status_code in [200, 204]:
                     self.log_message(f"[{host}] iDRAC reboot initiated successfully", Colors.GREEN)
                     self.log_message(f"[{host}] iDRAC will be unavailable for ~1-2 minutes", Colors.YELLOW)
                     return True
                 elif response.status_code == 404:
+                    self.log_message(f"[{host}] Reboot endpoint not found, trying next...")
                     continue
                 else:
+                    self.log_message(f"[{host}] Reboot request failed with status {response.status_code}")
                     return False
                     
-            except requests.exceptions.RequestException:
+            except requests.exceptions.RequestException as e:
+                self.log_message(f"[{host}] Reboot request exception: {str(e)}")
                 continue
         
         return False
