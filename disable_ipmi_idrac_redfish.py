@@ -193,7 +193,52 @@ class IDracIPMIDisabler:
         
         return False, "Attributes endpoint not available"
     
-    def disable_ipmi(self, host: str) -> bool:
+    def reboot_idrac(self, host: str) -> bool:
+        """
+        Reboot the iDRAC to apply configuration changes
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        base_url = f"https://{host}"
+        
+        endpoints = [
+            "/redfish/v1/Managers/iDRAC.Embedded.1/Actions/Manager.Reset",
+            "/redfish/v1/Managers/System.Embedded.1/Actions/Manager.Reset"
+        ]
+        
+        session = requests.Session()
+        session.auth = (self.username, self.password)
+        session.verify = False
+        
+        self.log_message(f"[{host}] Initiating iDRAC reboot...", Colors.YELLOW)
+        
+        for endpoint in endpoints:
+            try:
+                url = f"{base_url}{endpoint}"
+                
+                # Reset payload - GracefulRestart is safest
+                payload = {
+                    "ResetType": "GracefulRestart"
+                }
+                
+                response = session.post(url, json=payload, timeout=self.timeout)
+                
+                if response.status_code in [200, 204]:
+                    self.log_message(f"[{host}] iDRAC reboot initiated successfully", Colors.GREEN)
+                    self.log_message(f"[{host}] iDRAC will be unavailable for ~1-2 minutes", Colors.YELLOW)
+                    return True
+                elif response.status_code == 404:
+                    continue
+                else:
+                    return False
+                    
+            except requests.exceptions.RequestException:
+                continue
+        
+        return False
+    
+    def disable_ipmi(self, host: str, reboot_after: bool = False) -> bool:
         """Disable IPMI over LAN on a single iDRAC"""
         self.log_message(f"[{host}] Connecting to iDRAC via Redfish API...", Colors.YELLOW)
         
@@ -237,13 +282,39 @@ class IDracIPMIDisabler:
                 if verify_success:
                     if not verify_status:
                         self.log_message(f"[{host}] ✓ Verification successful - IPMI is disabled", Colors.GREEN)
+                        
+                        # Reboot iDRAC if requested
+                        if reboot_after:
+                            self.log_message(f"[{host}] Rebooting iDRAC to ensure changes take effect...", Colors.YELLOW)
+                            if self.reboot_idrac(host):
+                                self.log_message(f"[{host}] ✓ iDRAC reboot successful", Colors.GREEN)
+                            else:
+                                self.log_message(f"[{host}] ⚠ Could not reboot iDRAC automatically", Colors.YELLOW)
+                                self.log_message(f"[{host}] You may need to reboot manually via web interface", Colors.YELLOW)
+                        
                         return True
                     else:
                         self.log_message(f"[{host}] ⚠ Warning: IPMI still appears enabled", Colors.YELLOW)
                         self.log_message(f"[{host}] This may require an iDRAC reset to take effect", Colors.YELLOW)
+                        
+                        if reboot_after:
+                            self.log_message(f"[{host}] Attempting iDRAC reboot...", Colors.YELLOW)
+                            if self.reboot_idrac(host):
+                                self.log_message(f"[{host}] ✓ iDRAC reboot initiated - changes should apply after reboot", Colors.GREEN)
+                            else:
+                                self.log_message(f"[{host}] ⚠ Could not reboot iDRAC", Colors.YELLOW)
+                        
                         return True  # Still count as success since command was accepted
                 else:
                     self.log_message(f"[{host}] Could not verify configuration", Colors.YELLOW)
+                    
+                    if reboot_after:
+                        self.log_message(f"[{host}] Rebooting iDRAC as requested...", Colors.YELLOW)
+                        if self.reboot_idrac(host):
+                            self.log_message(f"[{host}] ✓ iDRAC reboot successful", Colors.GREEN)
+                        else:
+                            self.log_message(f"[{host}] ⚠ Could not reboot iDRAC", Colors.YELLOW)
+                    
                     return True  # Still count as success since disable command worked
             else:
                 self.log_message(f"[{host}] FAILED: {message}", Colors.RED)
@@ -259,7 +330,7 @@ class IDracIPMIDisabler:
             self.log_message(f"[{host}] ERROR: {str(e)}", Colors.RED)
             return False
     
-    def process_hosts(self, hosts: List[str]) -> Tuple[int, int]:
+    def process_hosts(self, hosts: List[str], reboot_after: bool = False) -> Tuple[int, int]:
         """Process multiple hosts"""
         success_count = 0
         fail_count = 0
@@ -270,7 +341,7 @@ class IDracIPMIDisabler:
             self.log_message(f"Processing iDRAC ({i}/{len(hosts)}): {host}")
             self.log_message("=" * 50)
             
-            if self.disable_ipmi(host):
+            if self.disable_ipmi(host, reboot_after):
                 success_count += 1
             else:
                 fail_count += 1
@@ -308,13 +379,15 @@ def get_credentials(args) -> Tuple[str, str]:
     return username, password
 
 
-def select_mode(args) -> Tuple[str, Optional[str], Optional[str]]:
-    """Select operation mode"""
+def select_mode(args) -> Tuple[str, Optional[str], Optional[str], bool]:
+    """Select operation mode and reboot preference"""
     # Check if mode was specified via command line
     if args.single:
-        return "single", args.single, None
+        reboot_after = args.reboot if hasattr(args, 'reboot') else False
+        return "single", args.single, None, reboot_after
     elif args.file:
-        return "multiple", None, args.file
+        reboot_after = args.reboot if hasattr(args, 'reboot') else False
+        return "multiple", None, args.file, reboot_after
     
     # Interactive mode selection
     print()
@@ -331,7 +404,13 @@ def select_mode(args) -> Tuple[str, Optional[str], Optional[str]]:
             if not host:
                 print(f"{Colors.RED}Error: Hostname cannot be empty{Colors.NC}")
                 continue
-            return "single", host, None
+            
+            # Ask about reboot
+            print()
+            reboot_choice = input("Reboot iDRAC after disabling IPMI to ensure changes take effect? (yes/no) [no]: ").strip().lower()
+            reboot_after = reboot_choice == "yes"
+            
+            return "single", host, None, reboot_after
         elif choice == "2":
             default_file = "idrac_hosts.txt"
             file_path = input(f"Enter path to hosts file [{default_file}]: ").strip() or default_file
@@ -339,7 +418,13 @@ def select_mode(args) -> Tuple[str, Optional[str], Optional[str]]:
             if not Path(file_path).exists():
                 print(f"{Colors.RED}Error: File '{file_path}' not found{Colors.NC}")
                 continue
-            return "multiple", None, file_path
+            
+            # Ask about reboot
+            print()
+            reboot_choice = input("Reboot iDRACs after disabling IPMI to ensure changes take effect? (yes/no) [no]: ").strip().lower()
+            reboot_after = reboot_choice == "yes"
+            
+            return "multiple", None, file_path, reboot_after
         else:
             print(f"{Colors.RED}Invalid choice{Colors.NC}")
 
@@ -356,7 +441,7 @@ def read_hosts_file(file_path: str) -> List[str]:
     return hosts
 
 
-def confirm_action(mode: str, target: str, username: str, log_file: str, host_count: int = 0) -> bool:
+def confirm_action(mode: str, target: str, username: str, log_file: str, host_count: int = 0, reboot_after: bool = False) -> bool:
     """Confirm action before proceeding"""
     print()
     print(f"{Colors.YELLOW}Configuration Summary:{Colors.NC}")
@@ -370,7 +455,13 @@ def confirm_action(mode: str, target: str, username: str, log_file: str, host_co
         print(f"  Hosts file: {target}")
         print(f"  Number of hosts: {host_count}")
     
+    print(f"  Reboot iDRAC after: {'Yes' if reboot_after else 'No'}")
     print(f"  Log file: {log_file}")
+    
+    if reboot_after:
+        print()
+        print(f"{Colors.YELLOW}⚠ Note: iDRACs will be rebooted and unavailable for ~1-2 minutes each{Colors.NC}")
+    
     print()
     
     response = input("Proceed with disabling IPMI-over-LAN? (yes/no): ").strip().lower()
@@ -389,11 +480,18 @@ Examples:
   Single device:
     %(prog)s -u root -p password -s 192.168.1.100
   
+  Single device with reboot:
+    %(prog)s -u root -p password -s 192.168.1.100 -r
+  
   Multiple devices:
     %(prog)s -u root -p password -f idrac_hosts.txt
+  
+  Multiple devices with reboot:
+    %(prog)s -u root -p password -f idrac_hosts.txt -r
 
 Note: This script uses the Redfish API (HTTPS) instead of SSH.
 Make sure the iDRAC web interface is accessible.
+The -r/--reboot flag will reboot each iDRAC after disabling IPMI to ensure changes take effect.
         """
     )
     
@@ -401,6 +499,7 @@ Make sure the iDRAC web interface is accessible.
     parser.add_argument('-p', '--password', help='iDRAC password')
     parser.add_argument('-s', '--single', help='Single iDRAC host')
     parser.add_argument('-f', '--file', help='File containing list of iDRAC hosts')
+    parser.add_argument('-r', '--reboot', action='store_true', help='Reboot iDRAC after disabling IPMI')
     
     args = parser.parse_args()
     
@@ -419,7 +518,7 @@ Make sure the iDRAC web interface is accessible.
     username, password = get_credentials(args)
     
     # Select mode
-    mode, single_host, hosts_file = select_mode(args)
+    mode, single_host, hosts_file, reboot_after = select_mode(args)
     
     # Prepare host list
     if mode == "single":
@@ -439,7 +538,7 @@ Make sure the iDRAC web interface is accessible.
     log_file = f"ipmi_disable_redfish_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     
     # Confirm action
-    if not confirm_action(mode, target_display, username, log_file, host_count):
+    if not confirm_action(mode, target_display, username, log_file, host_count, reboot_after):
         print(f"{Colors.YELLOW}Operation cancelled{Colors.NC}")
         sys.exit(0)
     
@@ -456,10 +555,11 @@ Make sure the iDRAC web interface is accessible.
     disabler.log_message(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     disabler.log_message(f"Mode: {mode}")
     disabler.log_message(f"User: {username}")
+    disabler.log_message(f"Reboot after: {reboot_after}")
     disabler.log_message("=" * 50)
     
     # Process hosts
-    success_count, fail_count = disabler.process_hosts(hosts)
+    success_count, fail_count = disabler.process_hosts(hosts, reboot_after)
     
     # Summary
     print()
@@ -476,7 +576,9 @@ Make sure the iDRAC web interface is accessible.
     
     if fail_count == 0:
         print(f"{Colors.GREEN}✓ All operations completed successfully!{Colors.NC}")
-        print(f"{Colors.YELLOW}Note: Some iDRACs may require a reset for changes to take effect.{Colors.NC}")
+        if not reboot_after:
+            print(f"{Colors.YELLOW}Note: Some iDRACs may require a reset for changes to take effect.{Colors.NC}")
+            print(f"{Colors.YELLOW}Run with -r flag to automatically reboot iDRACs after disabling IPMI.{Colors.NC}")
         sys.exit(0)
     else:
         print(f"{Colors.YELLOW}⚠ Some operations failed. Check log file for details.{Colors.NC}")

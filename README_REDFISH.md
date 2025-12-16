@@ -31,6 +31,7 @@ Python script that uses the **Redfish REST API** to disable IPMI-over-LAN on Del
 - ✅ Single device or multiple devices
 - ✅ Secure password input (hidden)
 - ✅ Color-coded output
+- ✅ **Optional iDRAC reboot** after disabling IPMI 🆕
 - ✅ Automatic endpoint detection (tries multiple API paths)
 - ✅ Detailed logging with timestamps
 - ✅ Pre and post verification
@@ -123,7 +124,8 @@ You'll be prompted for:
 1. Username (default: root)
 2. Password (hidden)
 3. Single or multiple device mode
-4. Confirmation before making changes
+4. **Whether to reboot iDRAC after disabling IPMI** 🆕
+5. Confirmation before making changes
 
 ### Command Line Mode
 
@@ -131,6 +133,12 @@ You'll be prompted for:
 ```bash
 python3 disable_ipmi_idrac_redfish.py -u root -p password -s 192.168.1.100
 ```
+
+#### Single Device with Automatic Reboot 🆕
+```bash
+python3 disable_ipmi_idrac_redfish.py -u root -p password -s 192.168.1.100 -r
+```
+The `-r` flag automatically reboots the iDRAC after disabling IPMI to ensure changes take effect immediately.
 
 #### Multiple Devices
 Create `idrac_hosts.txt`:
@@ -145,6 +153,11 @@ Run:
 python3 disable_ipmi_idrac_redfish.py -u root -p password -f idrac_hosts.txt
 ```
 
+#### Multiple Devices with Automatic Reboot 🆕
+```bash
+python3 disable_ipmi_idrac_redfish.py -u root -p password -f idrac_hosts.txt -r
+```
+
 ### Command Line Options
 ```
 -h, --help              Show help message
@@ -152,7 +165,15 @@ python3 disable_ipmi_idrac_redfish.py -u root -p password -f idrac_hosts.txt
 -p, --password PASSWORD iDRAC password
 -s, --single HOSTNAME   Single iDRAC host
 -f, --file FILE         File with list of iDRAC hosts
+-r, --reboot            Reboot iDRAC after disabling IPMI (recommended) 🆕
 ```
+
+### Why Reboot? 🔄
+Some iDRAC versions require a reboot for IPMI disable to take full effect. The `-r` flag:
+- ✅ Automatically reboots iDRAC after making changes
+- ✅ Ensures IPMI is fully disabled immediately
+- ✅ iDRAC will be unavailable for ~1-2 minutes during reboot
+- ✅ Recommended for maximum security assurance
 
 ## How It Works
 
